@@ -253,7 +253,7 @@ Project {
         property stringList defines: [
             "PICO_NO_HARDWARE=0",
             "PICO_ON_DEVICE=1",
-        ]
+        ].concat(project.pico_sdk_defines)
 
         cpp.defines: defines
 
@@ -283,7 +283,7 @@ Project {
             ]
 
             cpp.commonCompilerFlags: [
-                "-fdata-sections",
+                "-fdata-sections", "-ffunction-sections",
                 "-fno-common", "-fno-strict-aliasing",
                 "-ffast-math",
             ]

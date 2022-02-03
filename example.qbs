@@ -7,6 +7,12 @@ Project {
     property bool pico_float: false
     property bool pico_printf: false
 
+    property stringList pico_sdk_defines: [
+        "NDEBUG",
+        "PICO_PANIC_FUNCTION=",
+        "PICO_TIME_DEFAULT_ALARM_POOL_DISABLED=1",
+    ]
+
     references: [
         "pico-sdk.qbs",
     ]
