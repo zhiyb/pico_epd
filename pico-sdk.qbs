@@ -1,4 +1,5 @@
 import qbs
+import qbs.FileInfo
 
 Project {
     property stringList common: [
@@ -66,12 +67,14 @@ Project {
         files: [
             "pico-sdk/src/rp2_common/boot_stage2/boot_stage2.ld",
             "pico-sdk/src/rp2_common/boot_stage2/compile_time_choice.S",
+            "pico-sdk/src/rp2_common/boot_stage2/pad_checksum",
         ]
 
         Group {
             name: "implementations"
             fileTags: []
             files: [
+                "pico-sdk/src/rp2_common/boot_stage2/asminclude/**/*.S",
                 "pico-sdk/src/rp2_common/boot_stage2/boot2_*.S",
             ]
         }
@@ -97,7 +100,7 @@ Project {
             }
 
             prepare: {
-                var args = ["pico-sdk/src/rp2_common/boot_stage2/pad_checksum",
+                var args = [FileInfo.joinPaths(product.sourceDirectory, "pico-sdk/src/rp2_common/boot_stage2/pad_checksum"),
                             "-s", "0xffffffff", input.filePath, output.filePath];
                 var cmd = new Command("python3", args);
                 cmd.description = "generating " + output.fileName;
