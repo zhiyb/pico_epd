@@ -8,6 +8,7 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/unique_id.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
@@ -16,9 +17,11 @@
 #include "hardware/dma.h"
 #include "sensor_bmp2.h"
 #include "sensor_bme68x.h"
+#include "epd.h"
+#include "epd_test.h"
 
 
-#define MEASUREMENT_INTERVAL_US     ( 1 * 1000 * 1000)
+#define MEASUREMENT_INTERVAL_US     (15 * 1000 * 1000)
 #define REPORT_INTERVAL_US          (30 * 1000 * 1000)
 
 #define ESP_DMA_BUF_ADDR_BITS       12
@@ -247,8 +250,11 @@ void core1_entry(void)
     irq_set_enabled(SIO_IRQ_PROC1, true);
 
 
-    //static const char url[] = "https://zhiyb.me/api/io.php?s=pico";
-    static const char url[] = "https://zhiyb.me/logging/record.php?h=pico-dev";
+    static const char url_base[] = "https://zhiyb.me/logging/record.php?h=pico_";
+    static char url[sizeof(url_base) + 2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES], *purl = url;
+    memcpy(purl, url_base, sizeof(url_base));
+    purl += sizeof(url_base) - 1;
+    pico_get_unique_board_id_string(purl, sizeof(url) + (purl - url));
 
 
     result_valid_t prev_valid = {0};
@@ -356,10 +362,25 @@ int main(void)
 #if I2C_SCAN
     i2c_scan();
 #endif
+#if 0
     sensor_bmp2_init(i2c_sensors);
     sensor_bme68x_init(i2c_sensors);
+#endif
     init_spi();
+    init_epd();
 
+#if 1
+    for (;;) {
+        //epd_test_4in2();
+        //epd_test_7in5();
+        //epd_test_7in5_480p();
+        epd_test_5in65();
+
+        toggle_led();
+        __breakpoint();
+        sleep_ms(1000);
+    }
+#else
     // Configure Core 1 Interrupt
     irq_set_exclusive_handler(SIO_IRQ_PROC1, core1_interrupt_handler);
     multicore_launch_core1(core1_entry);
@@ -384,4 +405,5 @@ int main(void)
         sleep_until(time);
         toggle_led();
     }
+#endif
 }

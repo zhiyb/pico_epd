@@ -48,6 +48,7 @@ Project {
         "pico_bit_ops",
         "pico_int64_ops",
         "pico_divider",
+        "pico_unique_id",
     ]
 
     Product {
@@ -211,7 +212,7 @@ Project {
 
             cpp.linkerFlags: [
                 "--gc-sections", "--build-id=none"
-            ].concat(product.pico_wrap_function.map(function (f) {return "--wrap=" + f;}))
+            ].concat(exportingProduct.pico_wrap_function.map(function (f) {return "--wrap=" + f;}))
             //cpp.driverLinkerFlags: ["-nostdlib"]
             //cpp.driverLinkerFlags: ["--specs=nano.specs"]
             //cpp.driverLinkerFlags: ["--specs=nosys.specs"]
@@ -292,8 +293,8 @@ Project {
             ]
             cpp.positionIndependentCode: false
 
-            cpp.includePaths: product.includePaths
-            cpp.defines: product.defines
+            cpp.includePaths: exportingProduct.includePaths
+            cpp.defines: exportingProduct.defines
         }
     }
 }
