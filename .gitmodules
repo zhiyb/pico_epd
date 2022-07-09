@@ -1,6 +1,6 @@
 [submodule "pico-sdk"]
 	path = pico-sdk
-	url = ./pico-sdk
+	url = https://github.com/raspberrypi/pico-sdk.git
 [submodule "bmp2"]
 	path = bmp2
 	url = https://github.com/BoschSensortec/BMP2-Sensor-API.git
