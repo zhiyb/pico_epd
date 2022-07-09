@@ -31,7 +31,7 @@
 
 #define DEBUG_PRINT	5
 
-static void epd_reset()
+static void epd_reset(void)
 {
     spi_master_enable(0);
     gpio_set_rst(1);
@@ -42,13 +42,13 @@ static void epd_reset()
     systick_delay(100);
 }
 
-static void epd_off()
+static void epd_off(void)
 {
     spi_master_enable(0);
     gpio_set_rst(0);
 }
 
-static void epd_busy()
+static void epd_busy(void)
 {
     sleep_ms(100);
     while (gpio_get_busy())
@@ -110,6 +110,11 @@ static void epd_update(void)
     epd_busy();
 }
 
+static void epd_update_start(void)
+{
+    epd_cmd(CMD_MASTER_ACTIVATION);
+}
+
 static void epd_clear(void)
 {
     static const uint32_t w = (EPD_WIDTH + 7) / 8, h = EPD_HEIGHT;
@@ -142,6 +147,23 @@ static void epd_display(const uint8_t *bw, const uint8_t *red)
             epd_data(~red[i + j * w]);
 
     epd_update();
+}
+
+static void epd_display_start(const uint8_t *bw, const uint8_t *red)
+{
+    static const uint32_t w = (EPD_WIDTH + 7) / 8, h = EPD_HEIGHT;
+
+    epd_cmd(CMD_WRITE_RAM_BW);
+    for (uint32_t j = 0; j < h; j++)
+        for (uint32_t i = 0; i < w; i++)
+            epd_data(bw[i + j * w]);
+
+    epd_cmd(CMD_WRITE_RAM_RED);
+    for (uint32_t j = 0; j < h; j++)
+        for (uint32_t i = 0; i < w; i++)
+            epd_data(~red[i + j * w]);
+
+    epd_update_start();
 }
 
 static void epd_init(void)
@@ -332,7 +354,7 @@ static void epd_init(void)
     epd_cursor(0, 0);
     epd_busy();
 
-    //epd_clear();
+    epd_clear();
 
 #if 0
     epd_cmd(CMD_STATUS);
@@ -374,4 +396,27 @@ void epd_test_4in2(const uint8_t *pimg)
     epd_display(img_bw, img_red);
 
     epd_off();
+}
+
+static void epd_func_init(void)
+{
+    // GDEH042Z96-210119.pdf
+    epd_init();
+}
+
+static void epd_func_update(const uint8_t *pimg)
+{
+    const uint8_t *img_bw  = pimg;
+    const uint8_t *img_red = pimg + EPD_IMAGE_SIZE;
+    epd_display_start(img_bw, img_red);
+}
+
+epd_func_t epd_func_4in2(void)
+{
+    epd_func_t func = {
+        .init = &epd_func_init,
+        .wait = &epd_busy,
+        .update = &epd_func_update,
+    };
+    return func;
 }

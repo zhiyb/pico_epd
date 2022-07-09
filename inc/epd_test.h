@@ -10,6 +10,13 @@
 #define flushCache(...)
 #define dbgbkpt()   __breakpoint()
 
+typedef struct {
+    void (*init)(void);
+    void (*update)(const uint8_t *pimg);
+    void (*wait)(void);
+} epd_func_t;
+
+epd_func_t epd_func_4in2(void);
 
 void epd_test_4in2(const uint8_t *pimg);
 void epd_test_7in5(void);

@@ -39,6 +39,7 @@
 
 #define UUID_BASE                   "00000000-0000-0000-a0b7-6266088a6175"
 #define URL_BASE                    "https://zhiyb.me/nas/api/disp.php"
+#define SENSOR_URL_BASE             "https://zhiyb.me/logging/record.php?h=pico_"
 
 enum {NicReqGet = 0x5a, NicReqPost = 0xa5};
 
@@ -230,7 +231,7 @@ static void toggle_led(void)
 static void led_en(bool en)
 {
     const unsigned int led_pin = PICO_DEFAULT_LED_PIN;
-    gpio_put(led_pin, !en);
+    gpio_put(led_pin, en);
 }
 
 static void esp_enable(bool en)
@@ -242,30 +243,37 @@ static void esp_enable(bool en)
 #endif
 }
 
-static const uint8_t *http_get(const char *url, unsigned int *resp)
+static const uint8_t *http_req(const char *url, unsigned int *resp,
+                               const char *data, unsigned int datalen)
 {
+    const unsigned int headerlen = data ? 7 : 5;
+
     // Prepare SPI data buffer
     const unsigned int urllen = strlen(url);
     uint8_t header[] = {
-        NicReqGet,
+        data ? NicReqPost : NicReqGet,
         urllen,
         urllen >> 8,
+        datalen,
+        datalen >> 8,
         0, 0,
     };
 
     unsigned int ibuf = 0;
-    //memcpy((void *)&esp_dma_buf.buf[ibuf], header, sizeof(header));
-    ibuf += 5;
+    // Skip header for now
+    ibuf += headerlen;
     memcpy((void *)&esp_dma_buf.buf[ibuf], url, urllen);
     ibuf += urllen;
+    memcpy((void *)&esp_dma_buf.buf[ibuf], data, datalen);
+    ibuf += datalen;
     // Clear status code and response size
     memset((void *)&esp_dma_buf.buf[ibuf], 0, 4);
 
     // Update resp buffer size, request header
     // response code (2), response size (2)
     unsigned int resplen = sizeof(esp_dma_buf.buf) - (ibuf + 2 + 2);
-    memcpy(&header[3], &resplen, 2);
-    memcpy((void *)&esp_dma_buf.buf[0], header, sizeof(header));
+    memcpy(&header[headerlen - 2], &resplen, 2);
+    memcpy((void *)&esp_dma_buf.buf[0], header, headerlen);
 
     // Start SPI and send out data packet
     // Actually maximum bitrate we can achieve in slave mode is 133MHz/12 = 11Mbps
@@ -328,8 +336,6 @@ char *get_uuid(void)
 
 const uint8_t *get_disp_data(const char *uuid)
 {
-    esp_enable(true);
-
     static const char url_base[] = URL_BASE "?get=";
     char url[256], *purl = url;
     memcpy(purl, url_base, sizeof(url_base));
@@ -338,12 +344,21 @@ const uint8_t *get_disp_data(const char *uuid)
     memcpy(purl, uuid, len);
     purl += len;
 
-    const unsigned int block = 4096;
+    const unsigned int block = 1024 * 4;
     unsigned int ofs = 0;
     for (;;) {
         sprintf(purl, "&size=%u&ofs=%u", block, ofs);
+
         unsigned int resplen = 0;
-        const uint8_t *resp = http_get(url, &resplen);
+        const uint8_t *resp = 0;
+        for (int retry = 0; retry < 5; retry++) {
+            resp = http_req(url, &resplen, 0, 0);
+            if (resp != 0)
+                break;
+        }
+        if (resp == 0)
+            return 0;
+
         memcpy(&disp.raw[ofs], resp, resplen);
         ofs += resplen;
         if (resplen != block)
@@ -351,6 +366,32 @@ const uint8_t *get_disp_data(const char *uuid)
     }
 
     return &disp.raw[0];
+}
+
+void update_sensors(void)
+{
+    static const char url_base[] = SENSOR_URL_BASE;
+    char url[256], *purl = url;
+    memcpy(purl, url_base, sizeof(url_base));
+    purl += sizeof(url_base) - 1;
+    pico_get_unique_board_id_string(purl, sizeof(url) + (purl - url));
+
+    adc_results_t adc = sensor_adc_read();
+
+    char data[256];
+    unsigned int datalen = snprintf(data, sizeof(data),
+             "{\"tables\":{\"sensors\":["
+             "{\"type\":\"temperature\",\"sensor\":\"rp2040\",\"data\":%g},"
+             "{\"type\":\"voltage\",\"sensor\":\"vsys\",\"data\":%g}"
+             "]}}\r\n", adc.temp / 1000., adc.mvsys / 1000.);
+
+    unsigned int resplen = 0;
+    const uint8_t *resp = 0;
+    for (int retry = 0; retry < 5; retry++) {
+        resp = http_req(url, &resplen, data, datalen);
+        if (resp != 0)
+            break;
+    }
 }
 
 int main(void)
@@ -369,11 +410,28 @@ int main(void)
     char *uuid = get_uuid();
 
 #if 1
-    const uint8_t *pdata = get_disp_data(uuid); //&disp.rwb_400_300.img[0][0];
-    led_en(true);
-    epd_test_4in2(pdata);
-    led_en(false);
+    epd_func_t epd_func = epd_func_4in2();
 #endif
+
+    esp_enable(true);
+
+    // Start EPD update
+    const uint8_t *pdata = get_disp_data(uuid);
+    if (pdata) {
+        led_en(true);
+        epd_func.init();
+        epd_func.update(pdata);
+    }
+
+    // Update sensor data
+    update_sensors();
+
+    esp_enable(false);
+
+    // Wait EPD update complete
+    if (pdata)
+        epd_func.wait();
+    led_en(false);
 
     for (;;)
         sleep_until(-1);
