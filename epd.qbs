@@ -1,7 +1,7 @@
 import qbs
 
 Project {
-    minimumQbsVersion: "1.21.0"
+    minimumQbsVersion: "1.22.0"
 
     property bool pico_double: true
     property bool pico_float: true
@@ -38,6 +38,14 @@ Project {
         cpp.includePaths: ["inc"]
 
         files: [
+            "inc/epd.h",
+            "inc/epd_test.h",
+            "src/epd.c",
+            "src/epd_test.c",
+            "src/epd_test_4in2.c",
+            "src/epd_test_5in65.c",
+            "src/epd_test_7in5.c",
+            "src/epd_test_7in5_480p.c",
             "src/main.c",
         ]
 

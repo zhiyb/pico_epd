@@ -16,7 +16,8 @@
 #include "hardware/spi.h"
 #include "hardware/dma.h"
 #include "adc.h"
-
+#include "epd.h"
+#include "epd_test.h"
 
 #if 0
 #define MEASUREMENT_INTERVAL_US     (1 * 1000 * 1000)
@@ -396,9 +397,23 @@ int main(void)
 #if I2C_SCAN
     i2c_scan();
 #endif
-    init_spi();
     sensor_adc_init();
 
+    init_spi();
+    init_epd();
+
+#if 1
+    for (;;) {
+        epd_test_4in2();
+        //epd_test_7in5();
+        //epd_test_7in5_480p();
+        //epd_test_5in65();
+
+        toggle_led();
+        __breakpoint();
+        sleep_ms(1000);
+    }
+#else
     // Configure Core 1 Interrupt
     irq_set_exclusive_handler(SIO_IRQ_PROC1, core1_interrupt_handler);
     multicore_launch_core1(core1_entry);
@@ -419,4 +434,5 @@ int main(void)
         sleep_until(time);
         toggle_led();
     }
+#endif
 }
