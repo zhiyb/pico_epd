@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "pico/unique_id.h"
@@ -27,15 +28,19 @@
 #define REPORT_INTERVAL_US          (30 * 1000 * 1000)
 #endif
 
-#define ESP_POWER_SAVE              0
+#define ESP_POWER_SAVE              1
 #define ESP_BOOT_US                 (1 * 1000 * 1000)
 
-#define ESP_DMA_BUF_ADDR_BITS       12
+#define ESP_DMA_BUF_ADDR_BITS       15
 
 #define I2C_SCAN                    0
 
 #define RESULT_OK                   0
 
+#define UUID_BASE                   "00000000-0000-0000-a0b7-6266088a6175"
+#define URL_BASE                    "https://zhiyb.me/nas/api/disp.php"
+
+enum {NicReqGet = 0x5a, NicReqPost = 0xa5};
 
 static i2c_inst_t * const i2c_sensors = i2c1;
 static spi_inst_t * const spi_esp = spi0;
@@ -45,8 +50,6 @@ static const int pin_req = 1;
 static const int pin_ack = 0;
 
 static const unsigned int esp_pin = 22;
-
-static char str_buf[8 * 1024];
 
 static volatile struct {
     // SPI buffer for both TX and RX
@@ -66,6 +69,23 @@ volatile struct {
     result_t data[256];
     uint8_t wr, rd;
 } results;
+
+typedef union {
+    struct {
+        uint8_t img[2][400*300/8];
+    } rwb_400_300;
+    struct {
+        uint8_t img[2][640*384/8];
+    } rwb_640_384;
+    struct {
+        uint8_t img[2][800*480/8];
+    } rwb_800_480;
+    struct {
+        uint8_t img[600*448*3/8];
+    } full_600_448;
+    uint8_t raw[0];
+} disp_data_t;
+static disp_data_t disp;
 
 
 static void init_i2c(void)
@@ -197,6 +217,7 @@ static void init_gpio(void)
     }
 }
 
+#if 0
 static void toggle_led(void)
 {
     const unsigned int led_pin = PICO_DEFAULT_LED_PIN;
@@ -204,38 +225,47 @@ static void toggle_led(void)
     led = !led;
     gpio_put(led_pin, led);
 }
+#endif
+
+static void led_en(bool en)
+{
+    const unsigned int led_pin = PICO_DEFAULT_LED_PIN;
+    gpio_put(led_pin, !en);
+}
 
 static void esp_enable(bool en)
 {
 #if ESP_POWER_SAVE
     gpio_put(esp_pin, en);
+    if (en)
+        sleep_us(ESP_BOOT_US);
 #endif
 }
 
-
-
-static int send_data(const char *url, const char *data)
+static const uint8_t *http_get(const char *url, unsigned int *resp)
 {
     // Prepare SPI data buffer
     const unsigned int urllen = strlen(url);
-    const unsigned int datalen = strlen(data);
-    uint8_t header[5] = {
-        0xa5,           // POST
+    uint8_t header[] = {
+        NicReqGet,
         urllen,
         urllen >> 8,
-        datalen,
-        datalen >> 8,
+        0, 0,
     };
 
     unsigned int ibuf = 0;
-    memcpy((void *)&esp_dma_buf.buf[ibuf], header, 5);
+    //memcpy((void *)&esp_dma_buf.buf[ibuf], header, sizeof(header));
     ibuf += 5;
     memcpy((void *)&esp_dma_buf.buf[ibuf], url, urllen);
     ibuf += urllen;
-    memcpy((void *)&esp_dma_buf.buf[ibuf], data, datalen);
-    ibuf += datalen;
-    // Clear status code
-    memset((void *)&esp_dma_buf.buf[ibuf], 0, 2);
+    // Clear status code and response size
+    memset((void *)&esp_dma_buf.buf[ibuf], 0, 4);
+
+    // Update resp buffer size, request header
+    // response code (2), response size (2)
+    unsigned int resplen = sizeof(esp_dma_buf.buf) - (ibuf + 2 + 2);
+    memcpy(&header[3], &resplen, 2);
+    memcpy((void *)&esp_dma_buf.buf[0], header, sizeof(header));
 
     // Start SPI and send out data packet
     // Actually maximum bitrate we can achieve in slave mode is 133MHz/12 = 11Mbps
@@ -260,141 +290,75 @@ static int send_data(const char *url, const char *data)
 
     uint16_t code = 0;
     memcpy(&code, (void *)&esp_dma_buf.buf[ibuf], 2);
+    ibuf += 2;
 
-    return code == 200 ? RESULT_OK : -code;
+    if (code != 200)
+        return 0;
+
+    uint16_t respret = 0;
+    memcpy(&respret, (void *)&esp_dma_buf.buf[ibuf], 2);
+    ibuf += 2;
+
+    if (respret < resplen)
+        resplen = respret;
+    *resp = respret;
+
+    return (uint8_t *)&esp_dma_buf.buf[ibuf];
 }
 
-// Core 1 interrupt Handler
-void core1_interrupt_handler()
+
+char *get_uuid(void)
 {
-    __breakpoint();
+    char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
+    pico_get_unique_board_id_string(id, sizeof(id));
+
+    static char uuid[] = UUID_BASE;
+    char *p = &id[0], *puuid = &uuid[0];
+    while (*p != 0 && *puuid != 0) {
+        if (*puuid == '-') {
+            puuid++;
+            continue;
+        }
+        *puuid = tolower(*p);
+        puuid++;
+        p++;
+    }
+    return uuid;
 }
 
-// Core 1 Main Code
-void core1_entry(void)
+const uint8_t *get_disp_data(const char *uuid)
 {
-    multicore_fifo_clear_irq();
-    irq_set_enabled(SIO_IRQ_PROC1, true);
+    esp_enable(true);
 
-
-    static const char url_base[] = "https://zhiyb.me/logging/record.php?h=pico_";
-    static char url[sizeof(url_base) + 2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES], *purl = url;
+    static const char url_base[] = URL_BASE "?get=";
+    char url[256], *purl = url;
     memcpy(purl, url_base, sizeof(url_base));
     purl += sizeof(url_base) - 1;
-    pico_get_unique_board_id_string(purl, sizeof(url) + (purl - url));
+    unsigned int len = strlen(uuid);
+    memcpy(purl, uuid, len);
+    purl += len;
 
-
-    result_valid_t prev_valid = {0};
-    absolute_time_t time = get_absolute_time();
+    const unsigned int block = 4096;
+    unsigned int ofs = 0;
     for (;;) {
-        uint8_t rd = results.rd;
-        uint8_t wr = results.wr;
-        if (rd == wr)
-            continue;
-        esp_enable(true);
-#if ESP_POWER_SAVE
-        sleep_us(ESP_BOOT_US);
-#endif
-
-        for (uint8_t i = /*rd*/ wr - 1; i != wr; i++) {
-            const volatile result_t *pr = &results.data[i];
-            result_valid_t valid = pr->valid;
-
-            if ((valid.adc    && !prev_valid.adc)) {
-
-                bool comma = false;
-                char *pstr = str_buf;
-                static const char header[] = "{\"tables\":{\"sensors\":[";
-                memcpy(pstr, header, sizeof(header));
-                pstr += sizeof(header) - 1;
-
-                if (valid.adc && !prev_valid.adc) {
-                    if (comma)
-                        *pstr++ = ',';
-#if NUM_ADC_IN == 0
-                    static const char null[] = "{\"type\":\"temperature\",\"sensor\":\"rp2040\"},"
-                                               "{\"type\":\"voltage\",\"sensor\":\"vsys\"}";
-#else
-                    static const char null[] = "{\"type\":\"temperature\",\"sensor\":\"rp2040\"},"
-                                               "{\"type\":\"voltage\",\"sensor\":\"adc0\"},"
-                                               "{\"type\":\"voltage\",\"sensor\":\"adc1\"},"
-                                               "{\"type\":\"voltage\",\"sensor\":\"adc2\"},"
-                                               "{\"type\":\"voltage\",\"sensor\":\"adc3\"},"
-                                               "{\"type\":\"voltage\",\"sensor\":\"adc4\"}";
-#endif
-                    memcpy(pstr, null, sizeof(null));
-                    pstr += sizeof(null) - 1;
-                    comma = true;
-                }
-
-                static const char footer[] = "]}}\r\n";
-                memcpy(pstr, footer, sizeof(footer));
-                pstr += sizeof(footer) - 1;
-
-                if (send_data(url, str_buf) != RESULT_OK) {
-                    prev_valid = (result_valid_t){0};
-                    break;
-                }
-            }
-            prev_valid = valid;
-
-            {
-                bool comma = false;
-                char *pstr = str_buf;
-                static const char header[] = "{\"tables\":{\"sensors\":[";
-                memcpy(pstr, header, sizeof(header));
-                pstr += sizeof(header) - 1;
-
-                if (valid.adc) {
-                    if (comma)
-                        *pstr++ = ',';
-#if NUM_ADC_IN == 0
-                    pstr += sprintf(pstr,
-                                    "{\"type\":\"temperature\",\"sensor\":\"rp2040\",\"data\":%.3f},"
-                                    "{\"type\":\"voltage\",\"sensor\":\"vsys\",\"data\":%.3f}",
-                                    pr->adc.temp / 1000., pr->adc.mvsys / 1000.);
-#else
-                    pstr += sprintf(pstr,
-                                    "{\"type\":\"temperature\",\"sensor\":\"rp2040\",\"data\":%.3f},"
-                                    "{\"type\":\"voltage\",\"sensor\":\"adc0\",\"data\":%.3f},"
-                                    "{\"type\":\"voltage\",\"sensor\":\"adc1\",\"data\":%.3f},"
-                                    "{\"type\":\"voltage\",\"sensor\":\"adc2\",\"data\":%.3f},"
-                                    "{\"type\":\"voltage\",\"sensor\":\"adc3\",\"data\":%.3f},"
-                                    "{\"type\":\"voltage\",\"sensor\":\"adc4\",\"data\":%.3f}",
-                                    pr->adc.temp / 1000.,
-                                    pr->adc.mv[0] / 1000., pr->adc.mv[1] / 1000., pr->adc.mv[2] / 1000.,
-                                    pr->adc.mv[3] / 1000., pr->adc.mv[4] / 1000.);
-#endif
-                    comma = true;
-                }
-
-                static const char footer[] = "]}}\r\n";
-                memcpy(pstr, footer, sizeof(footer));
-                pstr += sizeof(footer) - 1;
-
-                if (send_data(url, str_buf) != RESULT_OK) {
-                    prev_valid = (result_valid_t){0};
-                    break;
-                }
-            }
-        }
-        results.rd = wr;
-
-        //send_data(url, str_buf);
-        esp_enable(false);
-
-        time = get_absolute_time();
-        time += REPORT_INTERVAL_US;
-        sleep_until(time);
+        sprintf(purl, "&size=%u&ofs=%u", block, ofs);
+        unsigned int resplen = 0;
+        const uint8_t *resp = http_get(url, &resplen);
+        memcpy(&disp.raw[ofs], resp, resplen);
+        ofs += resplen;
+        if (resplen != block)
+            break;
     }
-}
 
+    return &disp.raw[0];
+}
 
 int main(void)
 {
     init_gpio();
-    init_i2c();
+    led_en(false);
 #if I2C_SCAN
+    init_i2c();
     i2c_scan();
 #endif
     sensor_adc_init();
@@ -402,9 +366,22 @@ int main(void)
     init_spi();
     init_epd();
 
+    char *uuid = get_uuid();
+
 #if 1
+    const uint8_t *pdata = get_disp_data(uuid); //&disp.rwb_400_300.img[0][0];
+    led_en(true);
+    epd_test_4in2(pdata);
+    led_en(false);
+#endif
+
+    for (;;)
+        sleep_until(-1);
+
+#if 0
+    __breakpoint();
     for (;;) {
-        epd_test_4in2();
+        //epd_test_4in2();
         //epd_test_7in5();
         //epd_test_7in5_480p();
         //epd_test_5in65();
@@ -412,27 +389,6 @@ int main(void)
         toggle_led();
         __breakpoint();
         sleep_ms(1000);
-    }
-#else
-    // Configure Core 1 Interrupt
-    irq_set_exclusive_handler(SIO_IRQ_PROC1, core1_interrupt_handler);
-    multicore_launch_core1(core1_entry);
-    //multicore_fifo_push_blocking(0x3939);
-
-    absolute_time_t time = get_absolute_time();
-    for (;;) {
-        result_valid_t valid = {0};
-        valid.adc = true;
-
-        volatile result_t *pv = &results.data[results.wr];
-        pv->adc = sensor_adc_read();
-        pv->valid = valid;
-
-        toggle_led();
-        results.wr++;
-        time += MEASUREMENT_INTERVAL_US;
-        sleep_until(time);
-        toggle_led();
     }
 #endif
 }

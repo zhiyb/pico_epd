@@ -332,7 +332,7 @@ static void epd_init(void)
     epd_cursor(0, 0);
     epd_busy();
 
-    epd_clear();
+    //epd_clear();
 
 #if 0
     epd_cmd(CMD_STATUS);
@@ -352,19 +352,24 @@ static void epd_init(void)
 #endif
 }
 
-void epd_test_4in2(void)
+void epd_test_4in2(const uint8_t *pimg)
 {
     // GDEH042Z96-210119.pdf
 
     epd_init();
     printf(ESC_MSG "%lu\tepd: GDEH042Z96 test\n", systick_cnt());
 
+#if 1
+    const uint8_t *img_bw  = pimg;
+    const uint8_t *img_red = pimg + EPD_IMAGE_SIZE;
+#else
     static const uint8_t img_bw[EPD_IMAGE_SIZE] = {
     #include "tp2_400x300_k.c"
     };
     static const uint8_t img_red[EPD_IMAGE_SIZE] = {
     #include "tp2_400x300_r.c"
     };
+#endif
 
     epd_display(img_bw, img_red);
 

@@ -11,7 +11,7 @@
 #define dbgbkpt()   __breakpoint()
 
 
-void epd_test_4in2(void);
+void epd_test_4in2(const uint8_t *pimg);
 void epd_test_7in5(void);
 void epd_test_7in5_480p(void);
 void epd_test_5in65(void);
