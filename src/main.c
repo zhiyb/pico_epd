@@ -16,9 +16,6 @@
 #include "hardware/spi.h"
 #include "hardware/dma.h"
 #include "adc.h"
-#include "sensor_bmp2.h"
-#include "sensor_bme68x.h"
-#include "sensor_bh1745.h"
 
 
 #if 0
@@ -57,17 +54,11 @@ static volatile struct {
 
 typedef struct {
     bool adc;
-    bool bmp2;
-    bool bme68x;
-    bool bh1745;
 } result_valid_t;
 
 typedef struct {
     result_valid_t valid;
     adc_results_t adc;
-    bmp2_result_t bmp2;
-    bme68x_result_t bme68x;
-    bh1745_result_t bh1745;
 } result_t;
 
 volatile struct {
@@ -308,36 +299,13 @@ void core1_entry(void)
             const volatile result_t *pr = &results.data[i];
             result_valid_t valid = pr->valid;
 
-            if ((valid.bmp2   && !prev_valid.bmp2  ) ||
-                (valid.bme68x && !prev_valid.bme68x) ||
-                (valid.adc    && !prev_valid.adc) ||
-                (valid.bh1745 && !prev_valid.bh1745)) {
+            if ((valid.adc    && !prev_valid.adc)) {
 
                 bool comma = false;
                 char *pstr = str_buf;
                 static const char header[] = "{\"tables\":{\"sensors\":[";
                 memcpy(pstr, header, sizeof(header));
                 pstr += sizeof(header) - 1;
-
-                if (valid.bmp2 && !prev_valid.bmp2) {
-                    static const char null_bmp2[] = "{\"type\":\"temperature\",\"sensor\":\"bmp280\"},"
-                                                    "{\"type\":\"pressure\",\"sensor\":\"bmp280\"}";
-                    memcpy(pstr, null_bmp2, sizeof(null_bmp2));
-                    pstr += sizeof(null_bmp2) - 1;
-                    comma = true;
-                }
-
-                if (valid.bme68x && !prev_valid.bme68x) {
-                    if (comma)
-                        *pstr++ = ',';
-                    static const char null_bme68x[] = "{\"type\":\"temperature\",\"sensor\":\"bme688\"},"
-                                                      "{\"type\":\"pressure\",\"sensor\":\"bme688\"},"
-                                                      "{\"type\":\"humidity\",\"sensor\":\"bme688\"},"
-                                                      "{\"type\":\"gas_resistance\",\"sensor\":\"bme688\"}";
-                    memcpy(pstr, null_bme68x, sizeof(null_bme68x));
-                    pstr += sizeof(null_bme68x) - 1;
-                    comma = true;
-                }
 
                 if (valid.adc && !prev_valid.adc) {
                     if (comma)
@@ -353,18 +321,6 @@ void core1_entry(void)
                                                "{\"type\":\"voltage\",\"sensor\":\"adc3\"},"
                                                "{\"type\":\"voltage\",\"sensor\":\"adc4\"}";
 #endif
-                    memcpy(pstr, null, sizeof(null));
-                    pstr += sizeof(null) - 1;
-                    comma = true;
-                }
-
-                if (valid.bh1745 && !prev_valid.bh1745) {
-                    if (comma)
-                        *pstr++ = ',';
-                    static const char null[] = "{\"type\":\"luminance\",\"sensor\":\"bh1745_r\"},"
-                                               "{\"type\":\"luminance\",\"sensor\":\"bh1745_g\"},"
-                                               "{\"type\":\"luminance\",\"sensor\":\"bh1745_b\"},"
-                                               "{\"type\":\"luminance\",\"sensor\":\"bh1745_c\"}";
                     memcpy(pstr, null, sizeof(null));
                     pstr += sizeof(null) - 1;
                     comma = true;
@@ -388,30 +344,6 @@ void core1_entry(void)
                 memcpy(pstr, header, sizeof(header));
                 pstr += sizeof(header) - 1;
 
-                if (valid.bmp2) {
-                    pstr += sprintf(pstr,
-                                    "{\"type\":\"temperature\",\"sensor\":\"bmp280\",\"data\":%.3f},"
-                                    "{\"type\":\"pressure\",\"sensor\":\"bmp280\",\"data\":%.3f}",
-                                    pr->bmp2.temperature,
-                                    pr->bmp2.pressure);
-                    comma = true;
-                }
-
-                if (valid.bme68x) {
-                    if (comma)
-                        *pstr++ = ',';
-                    pstr += sprintf(pstr,
-                                    "{\"type\":\"temperature\",\"sensor\":\"bme688\",\"data\":%.3f},"
-                                    "{\"type\":\"pressure\",\"sensor\":\"bme688\",\"data\":%.3f},"
-                                    "{\"type\":\"humidity\",\"sensor\":\"bme688\",\"data\":%.3f},"
-                                    "{\"type\":\"gas_resistance\",\"sensor\":\"bme688\",\"data\":%.3f}",
-                                    pr->bme68x.temperature,
-                                    pr->bme68x.pressure,
-                                    pr->bme68x.humidity,
-                                    pr->bme68x.gas_resistance);
-                    comma = true;
-                }
-
                 if (valid.adc) {
                     if (comma)
                         *pstr++ = ',';
@@ -432,21 +364,6 @@ void core1_entry(void)
                                     pr->adc.mv[0] / 1000., pr->adc.mv[1] / 1000., pr->adc.mv[2] / 1000.,
                                     pr->adc.mv[3] / 1000., pr->adc.mv[4] / 1000.);
 #endif
-                    comma = true;
-                }
-
-                if (valid.bh1745) {
-                    if (comma)
-                        *pstr++ = ',';
-                    pstr += sprintf(pstr,
-                                    "{\"type\":\"luminance\",\"sensor\":\"bh1745_r\",\"data\":%.3f},"
-                                    "{\"type\":\"luminance\",\"sensor\":\"bh1745_g\",\"data\":%.3f},"
-                                    "{\"type\":\"luminance\",\"sensor\":\"bh1745_b\",\"data\":%.3f},"
-                                    "{\"type\":\"luminance\",\"sensor\":\"bh1745_c\",\"data\":%.3f}",
-                                    pr->bh1745.data[BH1745_Red] / 1000.,
-                                    pr->bh1745.data[BH1745_Green] / 1000.,
-                                    pr->bh1745.data[BH1745_Blue] / 1000.,
-                                    pr->bh1745.data[BH1745_Clear] / 1000.);
                     comma = true;
                 }
 
@@ -479,9 +396,6 @@ int main(void)
 #if I2C_SCAN
     i2c_scan();
 #endif
-    sensor_bmp2_init(i2c_sensors);
-    sensor_bme68x_init(i2c_sensors);
-    sensor_bh1745_init(i2c_sensors);
     init_spi();
     sensor_adc_init();
 
@@ -494,18 +408,9 @@ int main(void)
     for (;;) {
         result_valid_t valid = {0};
         valid.adc = true;
-        valid.bmp2 = sensor_bmp2_start_measurement() == RESULT_OK;
-        valid.bme68x = sensor_bme68x_start_measurement() == RESULT_OK;
-        valid.bh1745 = sensor_bh1745_start_measurement() == RESULT_OK;
 
         volatile result_t *pv = &results.data[results.wr];
         pv->adc = sensor_adc_read();
-        if (valid.bmp2)
-            valid.bmp2 = sensor_bmp2_get_measurement((bmp2_result_t *)&pv->bmp2) == RESULT_OK;
-        if (valid.bme68x)
-            valid.bme68x = sensor_bme68x_get_measurement((bme68x_result_t *)&pv->bme68x) == RESULT_OK;
-        if (valid.bh1745)
-            valid.bh1745 = sensor_bh1745_get_measurement((bh1745_result_t *)&pv->bh1745) == RESULT_OK;
         pv->valid = valid;
 
         toggle_led();
