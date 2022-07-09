@@ -18,6 +18,18 @@ Project {
     ]
 
     StaticLibrary {
+        name: "adc"
+        Depends {name: "pico-sdk"}
+
+        cpp.includePaths: ["inc"]
+
+        files: [
+            "inc/adc.h",
+            "src/adc.c",
+        ]
+    }
+
+    StaticLibrary {
         name: "bmp2"
         Depends {name: "pico-sdk"}
 
@@ -47,12 +59,26 @@ Project {
         ]
     }
 
+    StaticLibrary {
+        name: "bh1745"
+        Depends {name: "pico-sdk"}
+
+        cpp.includePaths: ["inc"]
+
+        files: [
+            "inc/sensor_bh1745.h",
+            "src/sensor_bh1745.c",
+        ]
+    }
+
     CppApplication {
         type: ["application", "hex", "size", "map"]
         Depends {name: "gcc-none"}
         Depends {name: "pico-sdk"}
+        Depends {name: "adc"}
         Depends {name: "bmp2"}
         Depends {name: "bme68x"}
+        Depends {name: "bh1745"}
 
         cpp.includePaths: ["inc"]
 

@@ -8,18 +8,29 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/unique_id.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/i2c.h"
 #include "hardware/spi.h"
 #include "hardware/dma.h"
+#include "adc.h"
 #include "sensor_bmp2.h"
 #include "sensor_bme68x.h"
+#include "sensor_bh1745.h"
 
 
-#define MEASUREMENT_INTERVAL_US     ( 1 * 1000 * 1000)
+#if 0
+#define MEASUREMENT_INTERVAL_US     (1 * 1000 * 1000)
+#define REPORT_INTERVAL_US          (10 * 1000 * 1000)
+#else
+#define MEASUREMENT_INTERVAL_US     (15 * 1000 * 1000)
 #define REPORT_INTERVAL_US          (30 * 1000 * 1000)
+#endif
+
+#define ESP_POWER_SAVE              0
+#define ESP_BOOT_US                 (1 * 1000 * 1000)
 
 #define ESP_DMA_BUF_ADDR_BITS       12
 
@@ -35,7 +46,9 @@ static const int spi_esp_rx_dma = 1;
 static const int pin_req = 1;
 static const int pin_ack = 0;
 
-static char str_buf[2 * 1024];
+static const unsigned int esp_pin = 22;
+
+static char str_buf[8 * 1024];
 
 static volatile struct {
     // SPI buffer for both TX and RX
@@ -43,14 +56,18 @@ static volatile struct {
 } esp_dma_buf;
 
 typedef struct {
+    bool adc;
     bool bmp2;
     bool bme68x;
+    bool bh1745;
 } result_valid_t;
 
 typedef struct {
     result_valid_t valid;
+    adc_results_t adc;
     bmp2_result_t bmp2;
     bme68x_result_t bme68x;
+    bh1745_result_t bh1745;
 } result_t;
 
 volatile struct {
@@ -159,6 +176,14 @@ static void init_gpio(void)
     gpio_set_dir(led_pin, GPIO_OUT);
     gpio_put(led_pin, true);
 
+    gpio_init(esp_pin);
+    gpio_set_dir(esp_pin, GPIO_OUT);
+#if ESP_POWER_SAVE
+    gpio_put(esp_pin, false);
+#else
+    gpio_put(esp_pin, true);
+#endif
+
     gpio_init(pin_req);
     gpio_put(pin_req, 1);
     gpio_set_dir(pin_req, GPIO_OUT);
@@ -172,11 +197,12 @@ static void init_gpio(void)
     gpio_set_pulls(pin_ack, true, false);
     gpio_set_input_hysteresis_enabled(pin_ack, true);
 
-    const unsigned int esp_pin = 22;
-    gpio_init(esp_pin);
-    gpio_set_dir(esp_pin, GPIO_OUT);
-    gpio_put(esp_pin, true);
-    gpio_put(esp_pin, false);
+    // ADC GPIOs as inputs
+    for (unsigned int pin = 26; pin <= 29; pin++) {
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_IN);
+        gpio_set_pulls(pin, false, false);
+    }
 }
 
 static void toggle_led(void)
@@ -185,6 +211,13 @@ static void toggle_led(void)
     static int led = 1;
     led = !led;
     gpio_put(led_pin, led);
+}
+
+static void esp_enable(bool en)
+{
+#if ESP_POWER_SAVE
+    gpio_put(esp_pin, en);
+#endif
 }
 
 
@@ -209,6 +242,8 @@ static int send_data(const char *url, const char *data)
     ibuf += urllen;
     memcpy((void *)&esp_dma_buf.buf[ibuf], data, datalen);
     ibuf += datalen;
+    // Clear status code
+    memset((void *)&esp_dma_buf.buf[ibuf], 0, 2);
 
     // Start SPI and send out data packet
     // Actually maximum bitrate we can achieve in slave mode is 133MHz/12 = 11Mbps
@@ -231,7 +266,10 @@ static int send_data(const char *url, const char *data)
     gpio_put(pin_req, 1);
     while (gpio_get(pin_ack) == 0);
 
-    return RESULT_OK;
+    uint16_t code = 0;
+    memcpy(&code, (void *)&esp_dma_buf.buf[ibuf], 2);
+
+    return code == 200 ? RESULT_OK : -code;
 }
 
 // Core 1 interrupt Handler
@@ -247,8 +285,11 @@ void core1_entry(void)
     irq_set_enabled(SIO_IRQ_PROC1, true);
 
 
-    //static const char url[] = "https://zhiyb.me/api/io.php?s=pico";
-    static const char url[] = "https://zhiyb.me/logging/record.php?h=pico-dev";
+    static const char url_base[] = "https://zhiyb.me/logging/record.php?h=pico_";
+    static char url[sizeof(url_base) + 2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES], *purl = url;
+    memcpy(purl, url_base, sizeof(url_base));
+    purl += sizeof(url_base) - 1;
+    pico_get_unique_board_id_string(purl, sizeof(url) + (purl - url));
 
 
     result_valid_t prev_valid = {0};
@@ -258,13 +299,19 @@ void core1_entry(void)
         uint8_t wr = results.wr;
         if (rd == wr)
             continue;
+        esp_enable(true);
+#if ESP_POWER_SAVE
+        sleep_us(ESP_BOOT_US);
+#endif
 
         for (uint8_t i = /*rd*/ wr - 1; i != wr; i++) {
             const volatile result_t *pr = &results.data[i];
             result_valid_t valid = pr->valid;
 
             if ((valid.bmp2   && !prev_valid.bmp2  ) ||
-                (valid.bme68x && !prev_valid.bme68x)) {
+                (valid.bme68x && !prev_valid.bme68x) ||
+                (valid.adc    && !prev_valid.adc) ||
+                (valid.bh1745 && !prev_valid.bh1745)) {
 
                 bool comma = false;
                 char *pstr = str_buf;
@@ -292,11 +339,45 @@ void core1_entry(void)
                     comma = true;
                 }
 
+                if (valid.adc && !prev_valid.adc) {
+                    if (comma)
+                        *pstr++ = ',';
+#if NUM_ADC_IN == 0
+                    static const char null[] = "{\"type\":\"temperature\",\"sensor\":\"rp2040\"},"
+                                               "{\"type\":\"voltage\",\"sensor\":\"vsys\"}";
+#else
+                    static const char null[] = "{\"type\":\"temperature\",\"sensor\":\"rp2040\"},"
+                                               "{\"type\":\"voltage\",\"sensor\":\"adc0\"},"
+                                               "{\"type\":\"voltage\",\"sensor\":\"adc1\"},"
+                                               "{\"type\":\"voltage\",\"sensor\":\"adc2\"},"
+                                               "{\"type\":\"voltage\",\"sensor\":\"adc3\"},"
+                                               "{\"type\":\"voltage\",\"sensor\":\"adc4\"}";
+#endif
+                    memcpy(pstr, null, sizeof(null));
+                    pstr += sizeof(null) - 1;
+                    comma = true;
+                }
+
+                if (valid.bh1745 && !prev_valid.bh1745) {
+                    if (comma)
+                        *pstr++ = ',';
+                    static const char null[] = "{\"type\":\"luminance\",\"sensor\":\"bh1745_r\"},"
+                                               "{\"type\":\"luminance\",\"sensor\":\"bh1745_g\"},"
+                                               "{\"type\":\"luminance\",\"sensor\":\"bh1745_b\"},"
+                                               "{\"type\":\"luminance\",\"sensor\":\"bh1745_c\"}";
+                    memcpy(pstr, null, sizeof(null));
+                    pstr += sizeof(null) - 1;
+                    comma = true;
+                }
+
                 static const char footer[] = "]}}\r\n";
                 memcpy(pstr, footer, sizeof(footer));
                 pstr += sizeof(footer) - 1;
 
-                send_data(url, str_buf);
+                if (send_data(url, str_buf) != RESULT_OK) {
+                    prev_valid = (result_valid_t){0};
+                    break;
+                }
             }
             prev_valid = valid;
 
@@ -331,16 +412,58 @@ void core1_entry(void)
                     comma = true;
                 }
 
+                if (valid.adc) {
+                    if (comma)
+                        *pstr++ = ',';
+#if NUM_ADC_IN == 0
+                    pstr += sprintf(pstr,
+                                    "{\"type\":\"temperature\",\"sensor\":\"rp2040\",\"data\":%.3f},"
+                                    "{\"type\":\"voltage\",\"sensor\":\"vsys\",\"data\":%.3f}",
+                                    pr->adc.temp / 1000., pr->adc.mvsys / 1000.);
+#else
+                    pstr += sprintf(pstr,
+                                    "{\"type\":\"temperature\",\"sensor\":\"rp2040\",\"data\":%.3f},"
+                                    "{\"type\":\"voltage\",\"sensor\":\"adc0\",\"data\":%.3f},"
+                                    "{\"type\":\"voltage\",\"sensor\":\"adc1\",\"data\":%.3f},"
+                                    "{\"type\":\"voltage\",\"sensor\":\"adc2\",\"data\":%.3f},"
+                                    "{\"type\":\"voltage\",\"sensor\":\"adc3\",\"data\":%.3f},"
+                                    "{\"type\":\"voltage\",\"sensor\":\"adc4\",\"data\":%.3f}",
+                                    pr->adc.temp / 1000.,
+                                    pr->adc.mv[0] / 1000., pr->adc.mv[1] / 1000., pr->adc.mv[2] / 1000.,
+                                    pr->adc.mv[3] / 1000., pr->adc.mv[4] / 1000.);
+#endif
+                    comma = true;
+                }
+
+                if (valid.bh1745) {
+                    if (comma)
+                        *pstr++ = ',';
+                    pstr += sprintf(pstr,
+                                    "{\"type\":\"luminance\",\"sensor\":\"bh1745_r\",\"data\":%.3f},"
+                                    "{\"type\":\"luminance\",\"sensor\":\"bh1745_g\",\"data\":%.3f},"
+                                    "{\"type\":\"luminance\",\"sensor\":\"bh1745_b\",\"data\":%.3f},"
+                                    "{\"type\":\"luminance\",\"sensor\":\"bh1745_c\",\"data\":%.3f}",
+                                    pr->bh1745.data[BH1745_Red] / 1000.,
+                                    pr->bh1745.data[BH1745_Green] / 1000.,
+                                    pr->bh1745.data[BH1745_Blue] / 1000.,
+                                    pr->bh1745.data[BH1745_Clear] / 1000.);
+                    comma = true;
+                }
+
                 static const char footer[] = "]}}\r\n";
                 memcpy(pstr, footer, sizeof(footer));
                 pstr += sizeof(footer) - 1;
 
-                send_data(url, str_buf);
+                if (send_data(url, str_buf) != RESULT_OK) {
+                    prev_valid = (result_valid_t){0};
+                    break;
+                }
             }
         }
         results.rd = wr;
 
-        send_data(url, str_buf);
+        //send_data(url, str_buf);
+        esp_enable(false);
 
         time = get_absolute_time();
         time += REPORT_INTERVAL_US;
@@ -358,7 +481,9 @@ int main(void)
 #endif
     sensor_bmp2_init(i2c_sensors);
     sensor_bme68x_init(i2c_sensors);
+    sensor_bh1745_init(i2c_sensors);
     init_spi();
+    sensor_adc_init();
 
     // Configure Core 1 Interrupt
     irq_set_exclusive_handler(SIO_IRQ_PROC1, core1_interrupt_handler);
@@ -367,15 +492,20 @@ int main(void)
 
     absolute_time_t time = get_absolute_time();
     for (;;) {
-        result_valid_t valid;
+        result_valid_t valid = {0};
+        valid.adc = true;
         valid.bmp2 = sensor_bmp2_start_measurement() == RESULT_OK;
         valid.bme68x = sensor_bme68x_start_measurement() == RESULT_OK;
+        valid.bh1745 = sensor_bh1745_start_measurement() == RESULT_OK;
 
         volatile result_t *pv = &results.data[results.wr];
+        pv->adc = sensor_adc_read();
         if (valid.bmp2)
             valid.bmp2 = sensor_bmp2_get_measurement((bmp2_result_t *)&pv->bmp2) == RESULT_OK;
         if (valid.bme68x)
             valid.bme68x = sensor_bme68x_get_measurement((bme68x_result_t *)&pv->bme68x) == RESULT_OK;
+        if (valid.bh1745)
+            valid.bh1745 = sensor_bh1745_get_measurement((bh1745_result_t *)&pv->bh1745) == RESULT_OK;
         pv->valid = valid;
 
         toggle_led();
