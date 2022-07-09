@@ -7,3 +7,6 @@
 [submodule "bme68x"]
 	path = bme68x
 	url = https://github.com/BoschSensortec/BME68x-Sensor-API.git
+[submodule "esp8266_nic"]
+	path = esp8266_nic
+	url = https://github.com/zhiyb/esp8266_nic.git
