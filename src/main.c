@@ -20,7 +20,7 @@
 #include "epd.h"
 #include "epd_test.h"
 
-#define UPDATE_INTERVAL_US          (60ull * 60 * 1000 * 1000)
+#define UPDATE_INTERVAL_US          (60ull * 60ull * 1000ull * 1000ull)
 
 #if 0
 #define MEASUREMENT_INTERVAL_US     (1 * 1000 * 1000)
@@ -39,9 +39,16 @@
 
 #define RESULT_OK                   0
 
-#define UUID_BASE                   "00000000-0000-0000-a0b7-6266088a6175"
 #define URL_BASE                    "https://zhiyb.me/nas/api/disp.php"
 #define SENSOR_URL_BASE             "https://zhiyb.me/logging/record.php?h=pico_"
+
+#if EPD_TYPE == EPD_TYPE_4IN2_RWB
+#define UUID_BASE                   "00000000-0000-0000-a0b7-6266088a6175"
+#elif EPD_TYPE == EPD_TYPE_5IN65_FULL
+#define UUID_BASE                   "00000000-0000-0000-9651-58a134fcdcc1"
+#else
+#error Unknown EPD type
+#endif
 
 enum {NicReqGet = 0x5a, NicReqPost = 0xa5};
 
@@ -51,6 +58,10 @@ static const int spi_esp_tx_dma = 0;
 static const int spi_esp_rx_dma = 1;
 static const int pin_req = 1;
 static const int pin_ack = 0;
+static const unsigned int gpio_esp_spi_ncs = 5;
+static const unsigned int gpio_esp_spi_sck = 2;
+static const unsigned int gpio_esp_spi_tx  = 3;
+static const unsigned int gpio_esp_spi_rx  = 4;
 
 static const unsigned int esp_pin = 22;
 
@@ -129,39 +140,35 @@ static void init_spi(void)
     spi_set_format(spi_esp, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
     //hw_set_bits(&spi_get_hw(spi_esp)->cr1, SPI_SSPCR1_SSE_BITS);
 
-    const unsigned int gpio_ncs = 5;
     //gpio_set_oeover(gpio_ncs, GPIO_OVERRIDE_LOW);
-    gpio_set_pulls(gpio_ncs, true, false);
+    gpio_set_pulls(gpio_esp_spi_ncs, false, true);
     //gpio_set_slew_rate(gpio_ncs, GPIO_SLEW_RATE_SLOW);
-    gpio_set_input_hysteresis_enabled(gpio_ncs, true);
-    gpio_set_function(gpio_ncs, GPIO_FUNC_SPI);
+    gpio_set_input_hysteresis_enabled(gpio_esp_spi_ncs, true);
+    gpio_set_function(gpio_esp_spi_ncs, GPIO_FUNC_SPI);
     // Set output disable on
-    hw_set_bits(&padsbank0_hw->io[gpio_ncs], PADS_BANK0_GPIO0_OD_BITS);
+    hw_set_bits(&padsbank0_hw->io[gpio_esp_spi_ncs], PADS_BANK0_GPIO0_OD_BITS);
 
-    const unsigned int gpio_sck = 2;
     //gpio_set_oeover(gpio_sck, GPIO_OVERRIDE_LOW);
-    gpio_set_pulls(gpio_sck, true, false);
+    gpio_set_pulls(gpio_esp_spi_sck, false, true);
     //gpio_set_slew_rate(gpio_sck, GPIO_SLEW_RATE_SLOW);
-    gpio_set_input_hysteresis_enabled(gpio_sck, true);
-    gpio_set_function(gpio_sck, GPIO_FUNC_SPI);
+    gpio_set_input_hysteresis_enabled(gpio_esp_spi_sck, true);
+    gpio_set_function(gpio_esp_spi_sck, GPIO_FUNC_SPI);
     // Set output disable on
-    hw_set_bits(&padsbank0_hw->io[gpio_sck], PADS_BANK0_GPIO0_OD_BITS);
+    hw_set_bits(&padsbank0_hw->io[gpio_esp_spi_sck], PADS_BANK0_GPIO0_OD_BITS);
 
-    const unsigned int gpio_tx  = 3;
-    gpio_set_pulls(gpio_tx, false, false);
-    gpio_set_slew_rate(gpio_tx, GPIO_SLEW_RATE_FAST);
-    gpio_set_drive_strength(gpio_tx, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_pulls(gpio_esp_spi_tx, false, false);
+    gpio_set_slew_rate(gpio_esp_spi_tx, GPIO_SLEW_RATE_FAST);
+    gpio_set_drive_strength(gpio_esp_spi_tx, GPIO_DRIVE_STRENGTH_12MA);
     //gpio_set_input_hysteresis_enabled(gpio_tx, true);
-    gpio_set_function(gpio_tx, GPIO_FUNC_SPI);
+    gpio_set_function(gpio_esp_spi_tx, GPIO_FUNC_SPI);
 
-    const unsigned int gpio_rx  = 4;
     //gpio_set_oeover(gpio_rx, GPIO_OVERRIDE_LOW);
-    gpio_set_pulls(gpio_rx, true, false);
+    gpio_set_pulls(gpio_esp_spi_rx, false, true);
     //gpio_set_slew_rate(gpio_rx, GPIO_SLEW_RATE_SLOW);
-    gpio_set_input_hysteresis_enabled(gpio_rx, true);
-    gpio_set_function(gpio_rx, GPIO_FUNC_SPI);
+    gpio_set_input_hysteresis_enabled(gpio_esp_spi_rx, true);
+    gpio_set_function(gpio_esp_spi_rx, GPIO_FUNC_SPI);
     // Set output disable on
-    hw_set_bits(&padsbank0_hw->io[gpio_rx], PADS_BANK0_GPIO0_OD_BITS);
+    hw_set_bits(&padsbank0_hw->io[gpio_esp_spi_rx], PADS_BANK0_GPIO0_OD_BITS);
 
     dma_channel_config tx_config = dma_channel_get_default_config(spi_esp_tx_dma);
     channel_config_set_read_increment(&tx_config, true);
@@ -191,16 +198,18 @@ static void init_gpio(void)
     gpio_set_dir(led_pin, GPIO_OUT);
     gpio_put(led_pin, true);
 
+    // Default ESP and SPI IOs to pull-down for power saving
     gpio_init(esp_pin);
+    gpio_set_pulls(esp_pin, false, false);
     gpio_set_dir(esp_pin, GPIO_OUT);
 #if ESP_POWER_SAVE
-    gpio_put(esp_pin, false);
-#else
     gpio_put(esp_pin, true);
+#else
+    gpio_put(esp_pin, false);
 #endif
 
     gpio_init(pin_req);
-    gpio_put(pin_req, 1);
+    gpio_put(pin_req, 0);
     gpio_set_dir(pin_req, GPIO_OUT);
     gpio_set_pulls(pin_req, false, false);
     gpio_set_slew_rate(pin_req, GPIO_SLEW_RATE_SLOW);
@@ -209,7 +218,7 @@ static void init_gpio(void)
 
     gpio_init(pin_ack);
     gpio_set_dir(pin_ack, GPIO_IN);
-    gpio_set_pulls(pin_ack, true, false);
+    gpio_set_pulls(pin_ack, false, true);
     gpio_set_input_hysteresis_enabled(pin_ack, true);
 
     // ADC GPIOs as inputs
@@ -239,9 +248,14 @@ static void led_en(bool en)
 static void esp_enable(bool en)
 {
 #if ESP_POWER_SAVE
-    gpio_put(esp_pin, en);
-    if (en)
+    if (en) {
+        gpio_put(esp_pin, 0);
+
         sleep_us(ESP_BOOT_US);
+
+    } else {
+        gpio_put(esp_pin, 1);
+    }
 #endif
 }
 
@@ -288,14 +302,13 @@ static const uint8_t *http_req(const char *url, unsigned int *resp,
     dma_channel_set_write_addr(spi_esp_rx_dma, esp_dma_buf.buf, true);
     //dma_start_channel_mask((1 << spi_esp_tx_dma) | (1 << spi_esp_rx_dma));
 
-    gpio_put(pin_req, 0);
+    gpio_put(pin_req, 1);
     while (gpio_get(pin_ack) == 1);
 
+    gpio_put(pin_req, 0);
     dma_channel_abort(spi_esp_rx_dma);
     dma_channel_abort(spi_esp_tx_dma);
     spi_deinit(spi_esp);
-
-    gpio_put(pin_req, 1);
     while (gpio_get(pin_ack) == 0);
 
     uint16_t code = 0;
@@ -399,9 +412,12 @@ void update_sensors(void)
 void update(const char *uuid)
 {
     // Select EPD type
-#if 1
+#if EPD_TYPE == EPD_TYPE_4IN2_RWB
     const epd_func_t epd_func = epd_func_4in2();
+#elif EPD_TYPE == EPD_TYPE_5IN65_FULL
+    const epd_func_t epd_func = epd_func_5in65();
 #else
+#error Unknown EPD type
     //epd_test_4in2();
     //epd_test_7in5();
     //epd_test_7in5_480p();

@@ -3,6 +3,11 @@
 
 #include "hardware/spi.h"
 
+#define EPD_TYPE_4IN2_RWB   1
+#define EPD_TYPE_5IN65_FULL 2
+
+#define EPD_TYPE            EPD_TYPE_4IN2_RWB
+
 static spi_inst_t * const spi_epd = spi1;
 
 static const unsigned int gpio_epd_busy = 9;
