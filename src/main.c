@@ -20,6 +20,8 @@
 #include "epd.h"
 #include "epd_test.h"
 
+#define UPDATE_INTERVAL_US          (60ull * 60 * 1000 * 1000)
+
 #if 0
 #define MEASUREMENT_INTERVAL_US     (1 * 1000 * 1000)
 #define REPORT_INTERVAL_US          (10 * 1000 * 1000)
@@ -394,6 +396,39 @@ void update_sensors(void)
     }
 }
 
+void update(const char *uuid)
+{
+    // Select EPD type
+#if 1
+    const epd_func_t epd_func = epd_func_4in2();
+#else
+    //epd_test_4in2();
+    //epd_test_7in5();
+    //epd_test_7in5_480p();
+    //epd_test_5in65();
+#endif
+
+    // Start EPD update
+    esp_enable(true);
+    const uint8_t *pdata = get_disp_data(uuid);
+    if (pdata) {
+        led_en(true);
+        epd_func.init();
+        epd_func.update(pdata);
+    }
+
+    // Update sensor data
+    update_sensors();
+
+    // Network access complete
+    esp_enable(false);
+
+    // Wait EPD update complete
+    if (pdata)
+        epd_func.wait();
+    led_en(false);
+}
+
 int main(void)
 {
     init_gpio();
@@ -407,46 +442,12 @@ int main(void)
     init_spi();
     init_epd();
 
-    char *uuid = get_uuid();
+    const char *uuid = get_uuid();
 
-#if 1
-    epd_func_t epd_func = epd_func_4in2();
-#endif
-
-    esp_enable(true);
-
-    // Start EPD update
-    const uint8_t *pdata = get_disp_data(uuid);
-    if (pdata) {
-        led_en(true);
-        epd_func.init();
-        epd_func.update(pdata);
-    }
-
-    // Update sensor data
-    update_sensors();
-
-    esp_enable(false);
-
-    // Wait EPD update complete
-    if (pdata)
-        epd_func.wait();
-    led_en(false);
-
-    for (;;)
-        sleep_until(-1);
-
-#if 0
-    __breakpoint();
+    absolute_time_t time = get_absolute_time();
     for (;;) {
-        //epd_test_4in2();
-        //epd_test_7in5();
-        //epd_test_7in5_480p();
-        //epd_test_5in65();
-
-        toggle_led();
-        __breakpoint();
-        sleep_ms(1000);
+        update(uuid);
+        time += UPDATE_INTERVAL_US;
+        sleep_until(time);
     }
-#endif
 }

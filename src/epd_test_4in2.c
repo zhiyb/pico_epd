@@ -30,6 +30,7 @@
 #define CMD_DIGITAL_BLOCK_CONTROL   0x7e
 
 #define DEBUG_PRINT	5
+#define UPD_LUT     0
 
 static void epd_reset(void)
 {
@@ -278,7 +279,7 @@ static void epd_init(void)
 #endif
 
 
-#if 1
+#if UPD_LUT
     static const uint8_t lut_full[76] =
     {
         0x66,0x88,0x66,0x21,0x54,0x40,0x04,
@@ -348,13 +349,11 @@ static void epd_init(void)
 #endif
 
 
-
-
     epd_window(0, 0, EPD_WIDTH-1, EPD_HEIGHT-1);
     epd_cursor(0, 0);
     epd_busy();
 
-    epd_clear();
+    //epd_clear();
 
 #if 0
     epd_cmd(CMD_STATUS);
